@@ -4,7 +4,8 @@ package main
 // обращаю ваше внимание - в этом задании запрещены глобальные переменные
 
 import (
-	context "context"                                              //this import from the code generation
+	context "context" //this import from the code generation
+	"encoding/json"
 	grpc "google.golang.org/grpc"                                  //this import from the code generation
 	codes "google.golang.org/grpc/codes"                           //this import from the code generation
 	status "google.golang.org/grpc/status"                         //this import from the code generation
@@ -16,7 +17,22 @@ import (
 	sync "sync"       //this import from the code generation
 )
 
+type MsCtx struct {
+	Acl map[string][]string
+}
+
+func NewMsCtx() *MsCtx {
+	return &MsCtx{}
+}
+
 func StartMyMicroservice(ctx context.Context, addr string, data string) error {
+
+	msCtx := NewMsCtx()
+	err := json.Unmarshal([]byte(data), &msCtx.Acl)
+	if err != nil {
+		return err
+	}
+
 	lis, err := net.Listen("tcp", addr)
 	if err != nil {
 		log.Println("can't listen a port:", addr, err)
@@ -28,7 +44,7 @@ func StartMyMicroservice(ctx context.Context, addr string, data string) error {
 		select {
 		case <-ctx.Done():
 			log.Println("closing server")
-			server.Stop()
+			server.GracefulStop()
 		}
 	}()
 
