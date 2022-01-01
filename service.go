@@ -21,10 +21,12 @@ import (
 	"time"
 )
 
+//MsCtx represents data which uses by this microservice
 type MsCtx struct {
-	Acl     map[string][]string
-	Lock    *sync.RWMutex
-	Loggers map[int]chan *Event
+	Acl      map[string][]string
+	Lock     *sync.Mutex
+	Loggers  map[int]chan *Event
+	StatData map[int]Stat
 }
 
 //Check is an implementation Check function of BizServer interface
@@ -78,14 +80,64 @@ func (m *MsCtx) logEvent(consumer string, method string, host string) {
 //Statistics is an implementation Statistics function of AdminServer interface
 func (m MsCtx) Statistics(interval *StatInterval, server Admin_StatisticsServer) error {
 	log.Println("Statistics")
-	return nil
+	sec := interval.IntervalSeconds
+	ticker := time.NewTicker(time.Duration(sec) * time.Second)
+	clientId := m.addStatClient()
+	for {
+		<-ticker.C
+		stat := m.getStat(clientId)
+		err := server.Send(&stat)
+		m.clearStat(clientId)
+		if err != nil {
+			m.deleteStatClient(clientId)
+			return err
+		}
+	}
+}
+
+func (m *MsCtx) addStatClient() int {
+	m.Lock.Lock()
+	number := len(m.StatData)
+	m.StatData[number] = Stat{ByConsumer: make(map[string]uint64), ByMethod: make(map[string]uint64)}
+	m.Lock.Unlock()
+	return number
+}
+
+func (m *MsCtx) deleteStatClient(client int) {
+	m.Lock.Lock()
+	delete(m.StatData, client)
+	m.Lock.Unlock()
+}
+
+func (m *MsCtx) clearStat(number int) {
+	m.Lock.Lock()
+	m.StatData[number] = Stat{ByConsumer: make(map[string]uint64), ByMethod: make(map[string]uint64)}
+	m.Lock.Unlock()
+}
+
+func (m *MsCtx) getStat(client int) Stat {
+	m.Lock.Lock()
+	defer m.Lock.Unlock()
+	s := m.StatData[client]
+	s.Timestamp = time.Now().UnixNano()
+	return s
+}
+
+func (m *MsCtx) addUsageStat(consumer string, method string) {
+	m.Lock.Lock()
+	for _, stat := range m.StatData {
+		stat.ByMethod[method]++
+		stat.ByConsumer[consumer]++
+	}
+	m.Lock.Unlock()
 }
 
 //NewMsCtx helps to make a MsCtx
 func NewMsCtx() *MsCtx {
 	result := &MsCtx{}
-	result.Lock = &sync.RWMutex{}
+	result.Lock = &sync.Mutex{}
 	result.Loggers = make(map[int]chan *Event)
+	result.StatData = make(map[int]Stat)
 	return result
 }
 
@@ -181,7 +233,9 @@ func unaryInterceptor(
 		return nil, status.Error(codes.Internal, "internal error")
 	}
 	host := p.Addr.String()
-	info.Server.(*MsCtx).logEvent(consumer, info.FullMethod, host)
+	msCtx := info.Server.(*MsCtx)
+	msCtx.logEvent(consumer, info.FullMethod, host)
+	msCtx.addUsageStat(consumer, info.FullMethod)
 	reply, err := handler(ctx, req)
 
 	log.Printf(`--
@@ -214,7 +268,9 @@ func streamInterceptor(srv interface{}, ss grpc.ServerStream, info *grpc.StreamS
 		return status.Error(codes.Internal, "internal error")
 	}
 	host := p.Addr.String()
-	srv.(*MsCtx).logEvent(consumer, info.FullMethod, host)
+	msCtx := srv.(*MsCtx)
+	msCtx.logEvent(consumer, info.FullMethod, host)
+	msCtx.addUsageStat(consumer, info.FullMethod)
 
 	err = handler(srv, ss)
 	log.Printf(`--
@@ -338,9 +394,9 @@ type Stat struct {
 	ByConsumer map[string]uint64 `protobuf:"bytes,3,rep,name=by_consumer,json=byConsumer" json:"by_consumer,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
 }
 
-func (x *Stat) Reset()         { *x = Stat{} }
-func (x *Stat) String() string { return proto.CompactTextString(x) }
-func (*Stat) ProtoMessage()    {}
+func (x *Stat) Reset()                    { *x = Stat{} }
+func (x *Stat) String() string            { return proto.CompactTextString(x) }
+func (*Stat) ProtoMessage()               {}
 func (*Stat) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{1} }
 
 func (x *Stat) GetTimestamp() int64 {
@@ -368,9 +424,9 @@ type StatInterval struct {
 	IntervalSeconds uint64 `protobuf:"varint,1,opt,name=interval_seconds,json=intervalSeconds" json:"interval_seconds,omitempty"`
 }
 
-func (x *StatInterval) Reset()         { *x = StatInterval{} }
-func (x *StatInterval) String() string { return proto.CompactTextString(x) }
-func (*StatInterval) ProtoMessage()    {}
+func (x *StatInterval) Reset()                    { *x = StatInterval{} }
+func (x *StatInterval) String() string            { return proto.CompactTextString(x) }
+func (*StatInterval) ProtoMessage()               {}
 func (*StatInterval) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{2} }
 
 func (x *StatInterval) GetIntervalSeconds() uint64 {
@@ -384,9 +440,9 @@ type Nothing struct {
 	Dummy bool `protobuf:"varint,1,opt,name=dummy" json:"dummy,omitempty"`
 }
 
-func (x *Nothing) Reset()         { *x = Nothing{} }
-func (x *Nothing) String() string { return proto.CompactTextString(x) }
-func (*Nothing) ProtoMessage()    {}
+func (x *Nothing) Reset()                    { *x = Nothing{} }
+func (x *Nothing) String() string            { return proto.CompactTextString(x) }
+func (*Nothing) ProtoMessage()               {}
 func (*Nothing) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{3} }
 
 func (x *Nothing) GetDummy() bool {
